@@ -24,8 +24,8 @@ st.markdown("""
 # ==========================================
 # CONFIGURAÇÕES DE API
 # ==========================================
-GMAPS_API_KEY = ""
-GEMINI_API_KEY = ""
+GMAPS_API_KEY = st.secrets.get("GMAPS_API_KEY", "")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 if not GMAPS_API_KEY or not GEMINI_API_KEY:
     st.warning("⚠️ Esta função requer ativação/configuração de chaves de API (Google Maps e Gemini) no código.")
