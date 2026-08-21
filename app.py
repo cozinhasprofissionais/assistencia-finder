@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
-import googlemaps
 import google.generativeai as genai
-from datetime import datetime
+import requests
 import time
 
 # ==========================================
@@ -15,22 +14,17 @@ st.markdown("""
     .main-header { font-size: 2.5rem; font-weight: 700; color: #1E3A8A; }
     .sub-header { font-size: 1.2rem; color: #4B5563; margin-bottom: 2rem; }
     .card { background-color: #F9FAFB; padding: 20px; border-radius: 10px; border: 1px solid #E5E7EB; margin-bottom: 15px; }
-    .status-confirmada { color: #047857; font-weight: bold; background-color: #D1FAE5; padding: 4px 8px; border-radius: 4px; }
-    .status-provavel { color: #B45309; font-weight: bold; background-color: #FEF3C7; padding: 4px 8px; border-radius: 4px; }
-    .score-badge { font-size: 1.2rem; font-weight: bold; float: right; color: #1E3A8A; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# CONFIGURAÇÕES DE API
+# CONFIGURAÇÕES DE API (Apenas Gemini)
 # ==========================================
-GMAPS_API_KEY = st.secrets.get("GMAPS_API_KEY", "")
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-if not GMAPS_API_KEY or not GEMINI_API_KEY:
-    st.warning("⚠️ Chaves de API não encontradas. Configure o 'Secrets' no painel do Streamlit.")
-
-if GEMINI_API_KEY:
+if not GEMINI_API_KEY:
+    st.warning("⚠️ Chave do Gemini não encontrada no 'Secrets'. Configure para ativar a Inteligência Artificial.")
+else:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-pro') 
 
@@ -46,38 +40,13 @@ SEGMENTOS = {
     "Todos": []
 }
 
-# CNAEs importados e categorizados da Base Tramontina 2026
-CNAES_POR_SEGMENTO = {
-    "Eletroportáteis": [
-        "9521-5/00", # Principal para equipamentos eletroeletrônicos de uso pessoal/doméstico
-        "3313-9/99", # Complementar para manutenção elétrica
-        "3314-7/10", # Equipamentos para uso geral
-        "3313-9/01"  # Manutenção e reparação de geradores, transformadores e motores
-    ],
-    "Cozinhas Profissionais": [
-        "3314-7/07", # Refrigeração e ventilação comercial/industrial
-        "3314-7/06", # Equipamentos para instalações térmicas (fornos)
-        "3314-7/10", # Equipamentos para uso geral
-        "4322-3/02", # Sistemas centrais de ventilação e refrigeração
-        "3321-0/00", # Instalação de máquinas e equipamentos industriais
-        "3313-9/99", # Aparelhos e materiais elétricos
-        "3314-7/04"  # Compressores
-    ],
-    "Panelas de Pressão": [
-        "9521-5/00", # Reparação de equipamentos de uso pessoal e doméstico
-        "9529-1/99", # Reparação de outros objetos e equipamentos não especificados
-        "3319-8/00"  # Equipamentos e produtos não especificados anteriormente
-    ],
-    "Todos": []
-}
-
-RAIOS = {"Cidade": 0, "10 km": 10000, "25 km": 25000, "50 km": 50000, "100 km": 100000}
+RAIOS = {"10 km": 10000, "25 km": 25000, "50 km": 50000, "100 km": 100000}
 
 # ==========================================
 # INTERFACE PRINCIPAL
 # ==========================================
 st.markdown('<p class="main-header">ASSISTÊNCIA FINDER 🔍</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Inteligência para prospecção de Assistências Técnicas Autorizadas</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Buscador Inteligente via OpenStreetMap (Gratuito)</p>', unsafe_allow_html=True)
 
 with st.form("search_form"):
     col1, col2, col3, col4 = st.columns(4)
@@ -88,82 +57,102 @@ with st.form("search_form"):
     with col3:
         segmento = st.selectbox("Segmento", list(SEGMENTOS.keys()))
     with col4:
-        raio = st.selectbox("Raio de Busca", list(RAIOS.keys()), index=2)
+        raio = st.selectbox("Raio de Busca", list(RAIOS.keys()), index=1)
     
     submit = st.form_submit_button("PESQUISAR ASSISTÊNCIAS", use_container_width=True)
 
 # ==========================================
-# LÓGICA DE PESQUISA E PROGRESSO
+# LÓGICA DE PESQUISA (OpenStreetMap) + GEMINI
 # ==========================================
 if submit:
     if not cidade:
         st.error("Por favor, digite uma cidade.")
-    elif not GMAPS_API_KEY:
-        st.error("As chaves de API não foram encontradas no st.secrets. Verifique as configurações do seu aplicativo.")
     else:
-        # Feedback visual dos CNAEs que serão utilizados
-        cnaes_ativos = CNAES_POR_SEGMENTO.get(segmento, [])
-        if cnaes_ativos:
-            st.info(f"Filtros de CNAE auxiliares ativos para {segmento}: {', '.join(cnaes_ativos)}")
-
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        status_text.text("✓ Consultando Google Maps (Places API)...")
+        status_text.text("✓ Localizando coordenadas da cidade (Nominatim)...")
         progress_bar.progress(20)
         
+        headers = {"User-Agent": "AssistenciaFinder_Tramontina/1.0"}
+        geo_url = f"https://nominatim.openstreetmap.org/search?city={cidade}&state={uf}&country=Brazil&format=json"
+        
         try:
-            # Conectando na API real do Google Maps
-            gmaps = googlemaps.Client(key=GMAPS_API_KEY)
+            # 1. Pegando Latitude e Longitude
+            geo_resp = requests.get(geo_url, headers=headers).json()
             
-            # 1. Pegar as coordenadas da cidade
-            geocode_result = gmaps.geocode(f"{cidade}, {uf}, Brazil")
-            if not geocode_result:
-                st.warning(f"Não foi possível localizar a cidade {cidade} - {uf}.")
+            if not geo_resp:
+                st.warning(f"Não foi possível encontrar as coordenadas para {cidade} - {uf}.")
+                progress_bar.progress(100)
             else:
-                location = geocode_result[0]['geometry']['location']
-                lat, lng = location['lat'], location['lng']
+                lat = geo_resp[0]["lat"]
+                lon = geo_resp[0]["lon"]
                 
-                # 2. Pesquisar assistências em volta
-                query = f"assistência técnica {segmento}"
-                radius_value = RAIOS[raio] if RAIOS[raio] > 0 else 50000
+                status_text.text("✓ Buscando comércios e assistências (Overpass API)...")
+                progress_bar.progress(50)
                 
-                places_result = gmaps.places_nearby(
-                    location=(lat, lng), 
-                    radius=radius_value, 
-                    keyword=query
-                )
+                # 2. Pesquisando no mapa gratuito (raio em metros)
+                raio_m = RAIOS[raio]
+                overpass_url = "http://overpass-api.de/api/interpreter"
                 
-                status_text.text("✓ Analisando empresas e eliminando duplicidades...")
-                progress_bar.progress(60)
+                # Procura por lojas de eletrônicos, consertos e eletrodomésticos
+                query = f"""
+                [out:json][timeout:25];
+                (
+                  node["shop"="electronics"](around:{raio_m},{lat},{lon});
+                  node["shop"="hardware"](around:{raio_m},{lat},{lon});
+                  node["craft"="electronics_repair"](around:{raio_m},{lat},{lon});
+                  node["shop"="appliance"](around:{raio_m},{lat},{lon});
+                );
+                out center;
+                """
                 
-                empresas = places_result.get('results', [])
+                op_resp = requests.get(overpass_url, params={'data': query}).json()
+                elementos = op_resp.get("elements", [])
                 
-                status_text.text("✓ Validando evidências com Gemini AI (Score e Status)...")
-                progress_bar.progress(80)
-                time.sleep(1) # Pequena pausa para efeito visual
+                # Filtra apenas locais que têm nome cadastrado
+                empresas = [e for e in elementos if "tags" in e and "name" in e["tags"]]
                 
-                status_text.text("✓ Pesquisa concluída.")
+                status_text.text("✓ Análise finalizada!")
                 progress_bar.progress(100)
                 
                 st.divider()
                 st.subheader(f"RESUMO DA PESQUISA: {cidade.upper()} - {uf}")
+                st.metric("Comércios mapeados pelo OpenStreetMap", len(empresas))
                 
                 if not empresas:
-                    st.info("Nenhuma empresa compatível foi retornada pelo Google Maps na região selecionada.")
-                    if st.button("EXPANDIR PESQUISA"):
-                        st.write("Pesquisando municípios próximos...")
+                    st.info("Nenhuma assistência ou loja de eletrônicos mapeada publicamente nesta região específica.")
                 else:
-                    r_col1, r_col2, r_col3, r_col4 = st.columns(4)
-                    r_col1.metric("Empresas encontradas no Maps", len(empresas))
-                    
                     st.write("### Principais Resultados:")
-                    for emp in empresas[:10]: # Mostra as 10 melhores
-                        with st.expander(f"🏢 {emp.get('name', 'Empresa Não Identificada')} - Status Preliminar: Em Análise"):
-                            st.write(f"**Endereço:** {emp.get('vicinity', 'Não informado')}")
-                            st.write(f"**Avaliação no Google:** {emp.get('rating', 'Sem avaliações')} ⭐")
-                            if emp.get('place_id'):
-                                st.markdown(f"[Ver no Google Maps](https://www.google.com/maps/place/?q=place_id:{emp.get('place_id')})")
-        
+                    
+                    # Preparando uma lista para o Gemini analisar
+                    lista_para_gemini = []
+                    
+                    for emp in empresas[:10]: # Mostra e analisa os primeiros 10
+                        nome = emp["tags"].get("name", "Sem Nome")
+                        rua = emp["tags"].get("addr:street", "Endereço não mapeado")
+                        telefone = emp["tags"].get("phone", "Sem telefone")
+                        
+                        lista_para_gemini.append(nome)
+                        
+                        with st.expander(f"🏢 {nome}"):
+                            st.write(f"**Rua:** {rua}")
+                            st.write(f"**Telefone:** {telefone}")
+                    
+                    # 3. Inteligência Artificial em ação
+                    if GEMINI_API_KEY and len(lista_para_gemini) > 0:
+                        st.write("---")
+                        st.write("### 🤖 O que a Inteligência Artificial acha?")
+                        st.write("Enviando a lista de empresas encontradas para o Gemini analisar...")
+                        
+                        prompt = f"""
+                        Você é um especialista em prospecção B2B da Tramontina. 
+                        Nós encontramos estas empresas na cidade de {cidade}: {', '.join(lista_para_gemini)}.
+                        Avaliando apenas pelo NOME das empresas, cite até 3 que parecem ser as mais indicadas para se tornarem uma Assistência Técnica Autorizada e explique brevemente o porquê.
+                        """
+                        
+                        resposta = model.generate_content(prompt)
+                        st.success(resposta.text)
+                        
         except Exception as e:
-            st.error(f"Erro ao consultar as APIs do Google: {e}")
+            st.error(f"Erro ao consultar os servidores de mapas gratuitos: {e}")
